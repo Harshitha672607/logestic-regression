@@ -1,0 +1,277 @@
+name: 7 Medical Diagnosis Logistic Regression Evaluate Model
+description: Evaluates trained Medical Diagnosis Logistic Regression model and generates comprehensive classification metrics
+inputs:
+  - name: trained_model
+    type: Model
+  - name: data_path
+    type: Dataset
+  - name: model_coefficients
+    type: String
+outputs:
+  - name: metrics
+    type: Metrics
+  - name: metrics_json
+    type: String
+  - name: evaluation_report
+    type: String
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        python -c "
+        import sys, os, pickle, json, pandas as pd, numpy as np
+        from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score, 
+                                   roc_auc_score, confusion_matrix, classification_report,
+                                   precision_recall_curve, average_precision_score)
+        
+        print('Number of arguments received:', len(sys.argv))
+        for i, arg in enumerate(sys.argv):
+            print(f'  Argument {i}: {arg}')
+        
+        # Get args - Skip the first 2 arguments (-c and --) and take the next 6
+        if len(sys.argv) < 8:
+            raise ValueError(f'Expected at least 8 arguments, got {len(sys.argv)}')
+        
+        trained_model_path = sys.argv[2]
+        data_path = sys.argv[3]
+        model_coefficients_path = sys.argv[4]
+        metrics_path = sys.argv[5]
+        metrics_json_path = sys.argv[6]
+        evaluation_report_path = sys.argv[7]
+        
+        print('Starting Medical Diagnosis Logistic Regression Evaluation')
+        print(f'Trained model path: {trained_model_path}')
+        print(f'Data path: {data_path}')
+        print(f'Coefficients path: {model_coefficients_path}')
+        
+        # Define the DataWrapper class
+        class DataWrapper:
+            def __init__(self, data_dict=None):
+                if data_dict:
+                    self.__dict__.update(data_dict)
+        
+        # Load trained model
+        if not os.path.exists(trained_model_path):
+            raise FileNotFoundError(f'trained_model does not exist: {trained_model_path}')
+            
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f'data_path does not exist: {data_path}')
+            
+        try:
+            with open(trained_model_path, 'rb') as f:
+                model_pipeline = pickle.load(f)
+            print('Trained model loaded successfully')
+        except Exception as e:
+            raise Exception(f'ERROR loading trained model: {e}')
+            
+        try:
+            with open(data_path, 'rb') as f:
+                data_wrapper = pickle.load(f)
+            print('Data loaded successfully')
+        except Exception as e:
+            raise Exception(f'ERROR loading data: {e}')
+            
+        # Load coefficients
+        try:
+            with open(model_coefficients_path, 'r') as f:
+                coefficients_csv = f.read()
+            coefficients_df = pd.read_csv(pd.compat.StringIO(coefficients_csv))
+            print('Coefficients loaded successfully')
+        except Exception as e:
+            print(f'Warning loading coefficients: {e}')
+            coefficients_df = pd.DataFrame()
+        
+        # Extract test data
+        try:
+            X_test = data_wrapper.X_test
+            y_test = data_wrapper.y_test
+            dataset_info = data_wrapper.dataset_info
+            numeric_features = data_wrapper.numeric_features
+            categorical_features = data_wrapper.categorical_features
+        except AttributeError:
+            if hasattr(data_wrapper, '__dict__'):
+                X_test = data_wrapper.__dict__.get('X_test')
+                y_test = data_wrapper.__dict__.get('y_test')
+                dataset_info = data_wrapper.__dict__.get('dataset_info', {})
+                numeric_features = data_wrapper.__dict__.get('numeric_features', ['age', 'blood_pressure', 'cholesterol', 'bmi'])
+                categorical_features = data_wrapper.__dict__.get('categorical_features', ['genetic_marker'])
+            else:
+                X_test = data_wrapper.get('X_test')
+                y_test = data_wrapper.get('y_test')
+                dataset_info = data_wrapper.get('dataset_info', {})
+                numeric_features = data_wrapper.get('numeric_features', ['age', 'blood_pressure', 'cholesterol', 'bmi'])
+                categorical_features = data_wrapper.get('categorical_features', ['genetic_marker'])
+        
+        # Fallback for dataset_info
+        if not dataset_info:
+            dataset_info = {
+                'feature_columns': list(X_test.columns) if X_test is not None else [],
+                'target_column': 'has_disease',
+                'problem_type': 'classification',
+                'dataset_name': 'medical_diagnosis'
+            }
+        
+        print(f'Evaluating on {len(X_test)} test samples')
+        print(f'Features: {dataset_info.get(\\\"feature_columns\\\", [])}')
+        print(f'Class distribution: {pd.Series(y_test).value_counts().to_dict()}')
+        
+        # Make predictions
+        y_pred = model_pipeline.predict(X_test)
+        y_pred_proba = model_pipeline.predict_proba(X_test)[:, 1]
+        
+        # Calculate comprehensive classification metrics
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, average='binary')
+        recall = recall_score(y_test, y_pred, average='binary')
+        f1 = f1_score(y_test, y_pred, average='binary')
+        auc_roc = roc_auc_score(y_test, y_pred_proba)
+        avg_precision = average_precision_score(y_test, y_pred_proba)
+        
+        # Additional metrics
+        cm = confusion_matrix(y_test, y_pred)
+        tn, fp, fn, tp = cm.ravel()
+        
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        false_positive_rate = fp / (fp + tn) if (fp + tn) > 0 else 0
+        negative_predictive_value = tn / (tn + fn) if (tn + fn) > 0 else 0
+        
+        # Classification report as dict
+        class_report = classification_report(y_test, y_pred, output_dict=True)
+        
+        # Calculate prevalence and performance metrics
+        prevalence = np.mean(y_test)
+        balanced_accuracy = (recall + specificity) / 2
+        
+        # Create comprehensive metrics dictionary
+        metrics = {
+            'test_metrics': {
+                'accuracy': float(accuracy),
+                'precision': float(precision),
+                'recall': float(recall),
+                'f1_score': float(f1),
+                'auc_roc': float(auc_roc),
+                'average_precision': float(avg_precision),
+                'specificity': float(specificity),
+                'false_positive_rate': float(false_positive_rate),
+                'negative_predictive_value': float(negative_predictive_value),
+                'balanced_accuracy': float(balanced_accuracy),
+                'true_positives': int(tp),
+                'true_negatives': int(tn),
+                'false_positives': int(fp),
+                'false_negatives': int(fn)
+            },
+            'classification_report': class_report,
+            'confusion_matrix': {
+                'tn': int(tn),
+                'fp': int(fp),
+                'fn': int(fn),
+                'tp': int(tp)
+            },
+            'target_statistics': {
+                'prevalence': float(prevalence),
+                'total_samples': len(y_test),
+                'positive_samples': int(np.sum(y_test)),
+                'negative_samples': int(len(y_test) - np.sum(y_test))
+            },
+            'model_info': {
+                'model_type': 'logistic_regression',
+                'problem_type': 'classification',
+                'dataset_name': 'medical_diagnosis',
+                'total_samples': len(y_test),
+                'features_used': dataset_info.get('feature_columns', []),
+                'coefficients_count': len(coefficients_df) if not coefficients_df.empty else 0
+            },
+            'clinical_interpretation': {
+                'sensitivity': float(recall),
+                'specificity': float(specificity),
+                'positive_predictive_value': float(precision),
+                'negative_predictive_value': float(negative_predictive_value)
+            }
+        }
+        
+        # Create detailed evaluation report
+        evaluation_report = f'Medical Diagnosis Logistic Regression Evaluation Report\\n'
+        evaluation_report += f'========================================================\\n\\n'
+        evaluation_report += f'Dataset: Medical Diagnosis (Disease Prediction)\\n'
+        evaluation_report += f'Target Variable: {dataset_info.get(\\\"target_column\\\", \\\"has_disease\\\")}\\n\\n'
+        
+        evaluation_report += f'Model Performance Metrics:\\n'
+        evaluation_report += f'Accuracy: {accuracy:.3f}\\n'
+        evaluation_report += f'Precision: {precision:.3f}\\n'
+        evaluation_report += f'Recall (Sensitivity): {recall:.3f}\\n'
+        evaluation_report += f'F1-Score: {f1:.3f}\\n'
+        evaluation_report += f'AUC-ROC: {auc_roc:.3f}\\n'
+        evaluation_report += f'Average Precision: {avg_precision:.3f}\\n\\n'
+        
+        evaluation_report += f'Clinical Performance Metrics:\\n'
+        evaluation_report += f'Sensitivity: {recall:.3f}\\n'
+        evaluation_report += f'Specificity: {specificity:.3f}\\n'
+        evaluation_report += f'Balanced Accuracy: {balanced_accuracy:.3f}\\n\\n'
+        
+        evaluation_report += f'Confusion Matrix:\\n'
+        evaluation_report += f'True Positives: {tp}\\n'
+        evaluation_report += f'False Positives: {fp}\\n'
+        evaluation_report += f'False Negatives: {fn}\\n'
+        evaluation_report += f'True Negatives: {tn}\\n\\n'
+        
+        evaluation_report += f'Dataset Statistics:\\n'
+        evaluation_report += f'Total Test Samples: {len(y_test)}\\n'
+        evaluation_report += f'Disease Prevalence: {prevalence:.3f}\\n'
+        evaluation_report += f'Positive Cases: {int(np.sum(y_test))}\\n'
+        evaluation_report += f'Negative Cases: {int(len(y_test) - np.sum(y_test))}\\n\\n'
+        
+        evaluation_report += f'Features Used:\\n'
+        for feature in dataset_info.get('feature_columns', []):
+            evaluation_report += f'- {feature}\\n'
+        
+        # Add feature importance if available
+        if not coefficients_df.empty:
+            evaluation_report += f'\\nTop 5 Most Important Features (by absolute coefficient):\\n'
+            top_features = coefficients_df.nlargest(5, 'abs_effect')
+            for _, row in top_features.iterrows():
+                evaluation_report += f'- {row[\\\"feature\\\"]}: Odds Ratio = {row[\\\"odds_ratio\\\"]:.3f}\\n'
+        
+        # Save outputs
+        try:
+            os.makedirs(os.path.dirname(metrics_path) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(metrics_json_path) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(evaluation_report_path) or '.', exist_ok=True)
+            
+            # Save metrics
+            with open(metrics_path, 'w') as f:
+                json.dump(metrics, f, indent=2)
+            
+            # Save metrics JSON
+            with open(metrics_json_path, 'w') as f:
+                json.dump(metrics, f, indent=2)
+            
+            # Save evaluation report
+            with open(evaluation_report_path, 'w') as f:
+                f.write(evaluation_report)
+            
+            print('Evaluation Complete')
+            print('=== Test Performance ===')
+            print(f'Accuracy:  {accuracy:.3f}')
+            print(f'Precision: {precision:.3f}')
+            print(f'Recall:    {recall:.3f}')
+            print(f'F1-Score:  {f1:.3f}')
+            print(f'AUC-ROC:   {auc_roc:.3f}')
+            print(f'Specificity: {specificity:.3f}')
+            
+        except Exception as e:
+            raise Exception(f'ERROR saving results: {e}')
+        
+        print('Model evaluation completed successfully!')
+        print(f'Metrics saved to: {metrics_path}')
+        print(f'Evaluation report saved to: {evaluation_report_path}')
+        " -- "$0" "$1" "$2" "$3" "$4" "$5" "$6"
+    args:
+      - {inputPath: trained_model}
+      - {inputPath: data_path}
+      - {inputPath: model_coefficients}
+      - {outputPath: metrics}
+      - {outputPath: metrics_json}
+      - {outputPath: evaluation_report}
