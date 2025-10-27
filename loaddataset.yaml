@@ -1,10 +1,10 @@
-name: 5 Load Medical Diagnosis CSV
+name: Load Medical Diagnosis CSV
 description: Downloads a Medical Diagnosis CSV file from a CDN, splits it into train/test datasets, and generates dataset metadata.
 
 inputs:
   - {name: cdn_url, type: String, description: 'CDN URL to download CSV file'}
   - {name: target_column, type: String, description: 'Target column name for classification (e.g., has_disease)'}
-  - {name: train_split, type: Float, description: 'Train split ratio (default 0.7)'}
+  - {name: train_split, type: Float, description: 'Train split ratio (default 0.75)'}
   - {name: shuffle_seed, type: Integer, description: 'Random seed for shuffling'}
 
 outputs:
@@ -45,6 +45,12 @@ implementation:
         print(f'Train split: {train_split}')
         print(f'Shuffle seed: {shuffle_seed}')
 
+        # Validate train_split parameter
+        if train_split > 1.0:
+            print(f'Warning: train_split {train_split} is greater than 1.0, converting to ratio')
+            train_split = train_split / 100.0
+            print(f'Converted train_split to: {train_split}')
+
         decoded_url = unquote(cdn_url)
         try:
             print('Downloading CSV')
@@ -71,10 +77,16 @@ implementation:
         print('Missing values:')
         print(df.isnull().sum())
 
+        # Ensure train_split is between 0 and 1
+        train_split = max(0.1, min(0.9, train_split))
+        test_size = 1.0 - train_split
+        
+        print(f'Using train split: {train_split}, test size: {test_size}')
+
         # Stratified split for classification
         train_df, test_df = train_test_split(
             df, 
-            test_size=1-train_split, 
+            test_size=test_size, 
             random_state=shuffle_seed,
             stratify=df[target_column]
         )
