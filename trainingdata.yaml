@@ -1,0 +1,239 @@
+name: Medical Diagnosis Logistic Regression Train Model
+description: Trains Logistic Regression model on medical diagnosis data
+inputs:
+  - name: data_path
+    type: Dataset
+  - name: preprocessing_pipeline
+    type: Model
+  - name: config
+    type: String
+outputs:
+  - name: trained_model
+    type: Model
+  - name: training_history
+    type: String
+  - name: model_coefficients
+    type: String
+implementation:
+  container:
+    image: nikhilv215/nesy-factory:v22
+    command:
+      - sh
+      - -c
+      - |
+        python -c "
+        import sys, os, pickle, json, pandas as pd, numpy as np
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+        
+        print('Number of arguments received:', len(sys.argv))
+        for i, arg in enumerate(sys.argv):
+            if i == 3:  # config string might be long
+                print(f'  Argument {i}: {arg[:100]}...')
+            else:
+                print(f'  Argument {i}: {arg}')
+        
+        # Get args - Expect 7 arguments total
+        if len(sys.argv) < 7:
+            raise ValueError(f'Expected 7 arguments, got {len(sys.argv)}')
+        
+        data_path = sys.argv[1]
+        preprocessing_path = sys.argv[2]
+        config_str = sys.argv[3]
+        trained_model_path = sys.argv[4]
+        training_history_path = sys.argv[5]
+        model_coefficients_path = sys.argv[6]
+        
+        print('Starting Medical Diagnosis Logistic Regression Training')
+        print(f'Data path: {data_path}')
+        print(f'Preprocessing path: {preprocessing_path}')
+        
+        # Define the DataWrapper class
+        class DataWrapper:
+            def __init__(self, data_dict=None):
+                if data_dict:
+                    self.__dict__.update(data_dict)
+        
+        # Load data
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f'data_path does not exist: {data_path}')
+            
+        if not os.path.exists(preprocessing_path):
+            raise FileNotFoundError(f'preprocessing_pipeline does not exist: {preprocessing_path}')
+            
+        try:
+            with open(data_path, 'rb') as f:
+                data_wrapper = pickle.load(f)
+            print('Data loaded successfully')
+        except Exception as e:
+            raise Exception(f'ERROR loading data: {e}')
+            
+        try:
+            with open(preprocessing_path, 'rb') as f:
+                preprocess = pickle.load(f)
+            print('Preprocessing pipeline loaded successfully')
+        except Exception as e:
+            raise Exception(f'ERROR loading preprocessing pipeline: {e}')
+            
+        # Extract data
+        try:
+            X_train = data_wrapper.X_train
+            y_train = data_wrapper.y_train
+            X_test = data_wrapper.X_test
+            y_test = data_wrapper.y_test
+            model_pipeline = data_wrapper.model_pipeline
+            numeric_features = data_wrapper.numeric_features
+            categorical_features = data_wrapper.categorical_features
+            dataset_info = data_wrapper.dataset_info
+        except AttributeError:
+            if hasattr(data_wrapper, '__dict__'):
+                X_train = data_wrapper.__dict__.get('X_train')
+                y_train = data_wrapper.__dict__.get('y_train')
+                X_test = data_wrapper.__dict__.get('X_test')
+                y_test = data_wrapper.__dict__.get('y_test')
+                model_pipeline = data_wrapper.__dict__.get('model_pipeline')
+                numeric_features = data_wrapper.__dict__.get('numeric_features', ['age', 'blood_pressure', 'cholesterol', 'bmi'])
+                categorical_features = data_wrapper.__dict__.get('categorical_features', ['genetic_marker'])
+                dataset_info = data_wrapper.__dict__.get('dataset_info', {})
+            else:
+                X_train = data_wrapper.get('X_train')
+                y_train = data_wrapper.get('y_train')
+                X_test = data_wrapper.get('X_test')
+                y_test = data_wrapper.get('y_test')
+                model_pipeline = data_wrapper.get('model_pipeline')
+                numeric_features = data_wrapper.get('numeric_features', ['age', 'blood_pressure', 'cholesterol', 'bmi'])
+                categorical_features = data_wrapper.get('categorical_features', ['genetic_marker'])
+                dataset_info = data_wrapper.get('dataset_info', {})
+        
+        print(f'Training on {len(X_train)} samples, testing on {len(X_test)} samples')
+        print(f'Features: {list(X_train.columns)}')
+        print(f'Numeric features: {numeric_features}')
+        print(f'Categorical features: {categorical_features}')
+        print(f'Class distribution: {pd.Series(y_train).value_counts().to_dict()}')
+        
+        # Train model
+        print('Training Logistic Regression model for medical diagnosis...')
+        model_pipeline.fit(X_train, y_train)
+        
+        # Make predictions
+        y_pred_train = model_pipeline.predict(X_train)
+        y_pred_test = model_pipeline.predict(X_test)
+        y_pred_proba_train = model_pipeline.predict_proba(X_train)[:, 1]
+        y_pred_proba_test = model_pipeline.predict_proba(X_test)[:, 1]
+        
+        # Calculate classification metrics
+        train_accuracy = accuracy_score(y_train, y_pred_train)
+        test_accuracy = accuracy_score(y_test, y_pred_test)
+        train_precision = precision_score(y_train, y_pred_train, average='binary')
+        test_precision = precision_score(y_test, y_pred_test, average='binary')
+        train_recall = recall_score(y_train, y_pred_train, average='binary')
+        test_recall = recall_score(y_test, y_pred_test, average='binary')
+        train_f1 = f1_score(y_train, y_pred_train, average='binary')
+        test_f1 = f1_score(y_test, y_pred_test, average='binary')
+        train_auc = roc_auc_score(y_train, y_pred_proba_train)
+        test_auc = roc_auc_score(y_test, y_pred_proba_test)
+        
+        # Extract coefficients with safe access
+        try:
+            preprocessor = model_pipeline.named_steps['preprocessor']
+            classifier = model_pipeline.named_steps['classifier']
+            
+            # Get feature names after preprocessing
+            numeric_features_out = numeric_features
+            categorical_features_out = preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features)
+            feature_names = np.r_[numeric_features_out, categorical_features_out]
+            
+            coefficients = classifier.coef_[0]
+            intercept = float(classifier.intercept_[0])
+            
+            coefficients_df = pd.DataFrame({
+                'feature': feature_names,
+                'coefficient': coefficients,
+                'odds_ratio': np.exp(coefficients),
+                'abs_effect': np.abs(coefficients)
+            }).sort_values('abs_effect', ascending=False)
+            
+            print('Feature importance (Odds Ratios):')
+            print(coefficients_df.to_string(index=False))
+            
+        except Exception as e:
+            print(f'Warning: Could not extract detailed coefficients: {e}')
+            # Create basic coefficients structure
+            feature_names = list(X_train.columns)
+            coefficients_df = pd.DataFrame({
+                'feature': feature_names,
+                'coefficient': [0] * len(feature_names),
+                'odds_ratio': [1] * len(feature_names),
+                'abs_effect': [0] * len(feature_names)
+            })
+            intercept = 0
+        
+        # Create training history
+        history = {
+            'train_metrics': {
+                'accuracy': float(train_accuracy),
+                'precision': float(train_precision),
+                'recall': float(train_recall),
+                'f1_score': float(train_f1),
+                'auc_roc': float(train_auc)
+            },
+            'test_metrics': {
+                'accuracy': float(test_accuracy),
+                'precision': float(test_precision),
+                'recall': float(test_recall),
+                'f1_score': float(test_f1),
+                'auc_roc': float(test_auc)
+            },
+            'coefficients': coefficients_df.to_dict('records'),
+            'feature_names': list(feature_names) if hasattr(feature_names, 'tolist') else feature_names,
+            'intercept': intercept,
+            'training_samples': len(X_train),
+            'test_samples': len(X_test),
+            'class_distribution': pd.Series(y_train).value_counts().to_dict(),
+            'dataset_info': dataset_info
+        }
+        
+        # Save results
+        try:
+            os.makedirs(os.path.dirname(trained_model_path) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(training_history_path) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(model_coefficients_path) or '.', exist_ok=True)
+            
+            # Save trained model
+            with open(trained_model_path, 'wb') as f:
+                pickle.dump(model_pipeline, f)
+            
+            # Save training history
+            with open(training_history_path, 'w') as f:
+                json.dump(history, f, indent=2)
+            
+            # Save coefficients as CSV string
+            coefficients_csv = coefficients_df.to_csv(index=False)
+            with open(model_coefficients_path, 'w') as f:
+                f.write(coefficients_csv)
+            
+            print('Training Complete')
+            print('=== Test Performance ===')
+            print(f'Accuracy:  {test_accuracy:.3f}')
+            print(f'Precision: {test_precision:.3f}')
+            print(f'Recall:    {test_recall:.3f}')
+            print(f'F1-Score:  {test_f1:.3f}')
+            print(f'AUC-ROC:   {test_auc:.3f}')
+            
+            print('=== Top Feature Effects (Odds Ratios) ===')
+            print(coefficients_df.head(10).to_string(index=False))
+            
+        except Exception as e:
+            raise Exception(f'ERROR saving results: {e}')
+        
+        print('Model training completed successfully!')
+        print(f'Trained model saved to: {trained_model_path}')
+        print(f'Training history saved to: {training_history_path}')
+        print(f'Coefficients saved to: {model_coefficients_path}')
+        " "$0" "$1" "$2" "$3" "$4" "$5" "$6"
+    args:
+      - {inputPath: data_path}
+      - {inputPath: preprocessing_pipeline}
+      - {inputValue: config}
+      - {outputPath: trained_model}
+      - {outputPath: training_history}
+      - {outputPath: model_coefficients}
